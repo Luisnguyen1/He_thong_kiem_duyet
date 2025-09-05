@@ -2,35 +2,10 @@ version: '3.8'
 
 services:
   nsfw-detector:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: nsfw-detector-app
+    build: .
+    container_name: nsfw-detector
     ports:
-      - "2002:2002"  # Giữ port 2002 để test local
+      - "2002:2002"
     environment:
-      - FLASK_ENV=production
       - PYTHONUNBUFFERED=1
-    volumes:
-      # Mount volume cho logs (tùy chọn)
-      - ./logs:/app/logs
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:2002/api"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    # Giới hạn tài nguyên để tránh quá tải hệ thống
-    deploy:
-      resources:
-        limits:
-          memory: 2G
-          cpus: '1.0'
-        reservations:
-          memory: 512M
-          cpus: '0.5'
-
-volumes:
-  logs:
-    driver: local
