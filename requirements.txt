@@ -1,0 +1,6 @@
+flask
+Pillow
+opennsfw2
+requests
+opencv-python-headless
+gunicorn

@@ -1,0 +1,22 @@
+# Ignore các file không cần thiết trong Docker build
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+.env
+.git/
+.gitignore
+README.md
+.dockerignore
+*.log
+logs/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.DS_Store
+Thumbs.db

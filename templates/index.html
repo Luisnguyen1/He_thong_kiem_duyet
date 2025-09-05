@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kiểm duyệt nội dung NSFW</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 2em; background-color: #f4f4f9; color: #333; }
+        .container { max-width: 800px; margin: auto; background: white; padding: 2em; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        h1, h2 { color: #333; }
+        hr { border: 0; height: 1px; background: #ddd; margin: 2em 0; }
+        form { margin-bottom: 1em; }
+        input[type="file"], input[type="url"] { padding: 0.5em; border: 1px solid #ccc; border-radius: 4px; width: calc(100% - 130px); margin-right: 10px; }
+        button { padding: 0.5em 1em; border: none; background-color: #007bff; color: white; border-radius: 4px; cursor: pointer; font-size: 1em; }
+        button:hover { background-color: #0056b3; }
+        .result { margin-top: 1em; padding: 1em; border: 1px solid #ccc; border-radius: 5px; background-color: #f9f9f9; white-space: pre-wrap; word-wrap: break-word; font-family: "Courier New", Courier, monospace; }
+        .error { color: #d8000c; background-color: #ffbaba; border-color: #d8000c; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 24px; height: 24px; animation: spin 1.5s linear infinite; display: none; margin-top: 1em; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Kiểm duyệt nội dung NSFW</h1>
+        <p>Sử dụng opennsfw2 và Flask để phân tích hình ảnh và video.</p>
+
+        <hr>
+
+        <h2>Phân tích Hình ảnh</h2>
+        <form id="image-form">
+            <h3>Tải lên một ảnh</h3>
+            <input type="file" name="file" id="image-file" accept="image/*" required>
+            <button type="submit">Kiểm tra Ảnh</button>
+        </form>
+        <form id="image-url-form">
+            <h3>...hoặc cung cấp URL ảnh</h3>
+            <input type="url" name="url" id="image-url" placeholder="https://example.com/image.jpg" required>
+            <button type="submit">Kiểm tra URL</button>
+        </form>
+        <div id="image-loader" class="loader"></div>
+        <div id="image-result" class="result" style="display:none;"></div>
+
+        <hr>
+
+        <h2>Phân tích Video</h2>
+        <p>Lưu ý: Quá trình xử lý video có thể chậm và tốn nhiều tài nguyên.</p>
+        <form id="video-form">
+            <h3>Tải lên một video</h3>
+            <input type="file" name="file" id="video-file" accept="video/*" required>
+            <button type="submit">Kiểm tra Video</button>
+        </form>
+        <div id="video-loader" class="loader"></div>
+        <div id="video-result" class="result" style="display:none;"></div>
+    </div>
+
+    <script>
+        // --- Form phân tích ảnh (Tải file) ---
+        document.getElementById('image-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('file', document.getElementById('image-file').files[0]);
+            handleRequest('/predict', formData, 'image-loader', 'image-result');
+        });
+
+        // --- Form phân tích ảnh (URL) ---
+        document.getElementById('image-url-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const url = document.getElementById('image-url').value;
+            const payload = JSON.stringify({ url: url });
+            handleRequest('/predict', payload, 'image-loader', 'image-result', { 'Content-Type': 'application/json' });
+        });
+
+        // --- Form phân tích video ---
+        document.getElementById('video-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const formData = new FormData();
+            formData.append('file', document.getElementById('video-file').files[0]);
+            handleRequest('/predict_video', formData, 'video-loader', 'video-result');
+        });
+
+        async function handleRequest(endpoint, body, loaderId, resultId, headers = {}) {
+            const loader = document.getElementById(loaderId);
+            const resultDiv = document.getElementById(resultId);
+
+            loader.style.display = 'block';
+            resultDiv.style.display = 'none';
+            resultDiv.className = 'result'; // Reset class
+
+            try {
+                const response = await fetch(endpoint, {
+                    method: 'POST',
+                    headers: headers,
+                    body: body
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    resultDiv.textContent = JSON.stringify(data, null, 2);
+                } else {
+                    resultDiv.className = 'result error';
+                    resultDiv.textContent = `Lỗi ${response.status}: ${JSON.stringify(data, null, 2)}`;
+                }
+            } catch (error) {
+                resultDiv.className = 'result error';
+                resultDiv.textContent = `Lỗi mạng hoặc máy chủ: ${error.message}`;
+            } finally {
+                loader.style.display = 'none';
+                resultDiv.style.display = 'block';
+            }
+        }
+    </script>
+</body>
+</html>
