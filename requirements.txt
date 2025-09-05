@@ -1,7 +1,7 @@
 flask
 Pillow
+tensorflow
+opencv-python-headless
 opennsfw2
 requests
-opencv-python-headless
 gunicorn
-tensorflow

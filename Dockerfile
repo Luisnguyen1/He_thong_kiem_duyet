@@ -27,14 +27,8 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements trước để tận dụng Docker layer caching
 COPY requirements.txt .
 
-# Cập nhật requirements.txt để bao gồm các dependencies cần thiết
-RUN pip install --no-cache-dir \
-    flask \
-    Pillow \
-    opennsfw2 \
-    requests \
-    opencv-python-headless \
-    gunicorn
+# Cài đặt dependencies từ requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy toàn bộ source code
 COPY . .
@@ -47,5 +41,5 @@ USER app
 # Expose port
 EXPOSE 2002
 
-# Sử dụng gunicorn cho production
-CMD ["gunicorn", "--bind", "0.0.0.0:2002", "--workers", "2", "--timeout", "120", "main:app"]
+# Chạy Flask trực tiếp (development/nhẹ)
+CMD ["python", "main.py"]
