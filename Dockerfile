@@ -12,6 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxrender1 \
     libgomp1 \
     libgl1 \
+    libgstreamer1.0-0 \
+    libgstreamer-plugins-base1.0-0 \
+    libgtk-3-0 \
+    libavcodec58 \
+    libavformat58 \
+    libswscale5 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements và cài đặt dependencies Python

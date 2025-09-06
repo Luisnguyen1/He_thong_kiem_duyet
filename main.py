@@ -6,6 +6,20 @@ import tempfile
 import traceback
 import opennsfw2 as n2
 import requests
+import logging
+import sys
+
+# Cấu hình logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.StreamHandler(sys.stderr)
+    ]
+)
+
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
@@ -60,6 +74,7 @@ def predict():
     - JSON { "url": "https://..." } => server sẽ fetch và dùng ảnh đó
     Trả JSON: { nsfw_probability: 0.123, is_nsfw: true, detail: ... }
     """
+    logger.info("Received prediction request")
     try:
         # 1) check file in form-data
         if 'file' in request.files:
@@ -194,5 +209,10 @@ def api_info():
 
 
 if __name__ == '__main__':
+    # Thêm logging khi start server
+    logger.info("Starting NSFW Detection Flask Server...")
+    logger.info(f"Server will run on host=0.0.0.0, port=2002")
+    logger.info(f"NSFW Threshold: {NSFW_THRESHOLD}")
+    
     # chạy dev server, production nên dùng gunicorn/uvicorn
     app.run(host='0.0.0.0', port=2002, debug=True)

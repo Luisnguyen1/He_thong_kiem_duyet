@@ -8,4 +8,12 @@ services:
       - "2002:2002"
     environment:
       - PYTHONUNBUFFERED=1
+      - FLASK_ENV=development
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    tty: true
+    stdin_open: true
