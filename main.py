@@ -8,6 +8,17 @@ import opennsfw2 as n2
 import requests
 import logging
 import sys
+import mimetypes
+import time
+from werkzeug.utils import secure_filename
+
+# Chọn path ghi được
+home = os.path.expanduser("~")  # sẽ là /home/user
+custom_weights_path = os.path.join(home, ".opennsfw2")
+
+# Tạo nếu chưa tồn tại
+os.makedirs(custom_weights_path, exist_ok=True)
+os.environ["OPENNSFW2_WEIGHTS_PATH"] = custom_weights_path
 
 # Cấu hình logging
 logging.basicConfig(
@@ -21,14 +32,64 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+def is_supported_image(filename, content_type=None):
+    """Kiểm tra xem file có phải là ảnh được hỗ trợ không"""
+    if filename:
+        ext = os.path.splitext(filename.lower())[1]
+        if ext in SUPPORTED_IMAGE_EXTENSIONS:
+            return True
+    
+    if content_type and content_type.lower() in SUPPORTED_IMAGE_MIMES:
+        return True
+    
+    return False
+
+def is_supported_video(filename, content_type=None):
+    """Kiểm tra xem file có phải là video được hỗ trợ không"""
+    if filename:
+        ext = os.path.splitext(filename.lower())[1]
+        if ext in SUPPORTED_VIDEO_EXTENSIONS:
+            return True
+    
+    if content_type and content_type.lower() in SUPPORTED_VIDEO_MIMES:
+        return True
+    
+    return False
+
 app = Flask(__name__)
 
 # cấu hình
 MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB giới hạn kích thước upload
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
+def validate_file_size(file_size, max_size=MAX_CONTENT_LENGTH):
+    """Kiểm tra kích thước file"""
+    return file_size <= max_size
+
 # ngưỡng để gắn nhãn NSFW (có thể thay đổi tuỳ ứng dụng)
 NSFW_THRESHOLD = 0.5
+
+# Các định dạng file được hỗ trợ
+SUPPORTED_IMAGE_EXTENSIONS = {
+    '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', 
+    '.webp', '.ico', '.ppm', '.pgm', '.pbm', '.pnm'
+}
+
+SUPPORTED_VIDEO_EXTENSIONS = {
+    '.mp4', '.avi', '.mov', '.wmv', '.flv', '.webm', '.mkv', 
+    '.m4v', '.3gp', '.3g2', '.asf', '.rm', '.rmvb', '.vob'
+}
+
+SUPPORTED_IMAGE_MIMES = {
+    'image/jpeg', 'image/png', 'image/gif', 'image/bmp', 
+    'image/tiff', 'image/webp', 'image/x-icon', 'image/vnd.microsoft.icon'
+}
+
+SUPPORTED_VIDEO_MIMES = {
+    'video/mp4', 'video/avi', 'video/quicktime', 'video/x-msvideo',
+    'video/x-flv', 'video/webm', 'video/x-matroska', 'video/3gpp',
+    'video/x-ms-wmv', 'video/x-ms-asf'
+}
 
 # --- Optional: preload model (nếu opennsfw2 hỗ trợ preload, gọi theo docs) ---
 # Nếu opennsfw2 có hàm load_model bạn có thể gọi ở đây. Nếu không có, predict_image
@@ -41,24 +102,36 @@ def predict_pil_image(pil_img):
     opennsfw2.accepts pillow Image objects or file path.
     """
     try:
+        # Chuyển đổi sang RGB nếu cần thiết (cho các định dạng có alpha channel hoặc palette)
+        if pil_img.mode not in ('RGB', 'L'):
+            pil_img = pil_img.convert('RGB')
+        
         # some versions accept PIL.Image directly
         prob = n2.predict_image(pil_img)
         # đảm bảo trả float
         prob = float(prob)
         return {
             "nsfw_probability": prob,
-            "is_nsfw": prob >= NSFW_THRESHOLD
+            "is_nsfw": prob >= NSFW_THRESHOLD,
+            "image_mode": pil_img.mode,
+            "image_size": pil_img.size
         }
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Direct PIL prediction failed: {e}, trying file fallback")
         # fallback: lưu tạm và gọi bằng file path
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".jpg")
         try:
-            pil_img.save(tmp, format="JPEG")
+            # Đảm bảo ảnh ở định dạng RGB trước khi lưu
+            if pil_img.mode != 'RGB':
+                pil_img = pil_img.convert('RGB')
+            pil_img.save(tmp, format="JPEG", quality=95)
             tmp.close()
             prob = float(n2.predict_image(tmp.name))
             return {
                 "nsfw_probability": prob,
-                "is_nsfw": prob >= NSFW_THRESHOLD
+                "is_nsfw": prob >= NSFW_THRESHOLD,
+                "image_mode": pil_img.mode,
+                "image_size": pil_img.size
             }
         finally:
             try:
@@ -82,28 +155,49 @@ def predict():
             if f.filename == '':
                 return jsonify({"error": "No filename provided"}), 400
 
+            # Kiểm tra định dạng file
+            if not is_supported_image(f.filename, f.content_type):
+                return jsonify({
+                    "error": "Unsupported image format", 
+                    "supported_formats": list(SUPPORTED_IMAGE_EXTENSIONS),
+                    "received_filename": f.filename,
+                    "received_content_type": f.content_type
+                }), 400
+
             # read bytes
             data = f.read()
             if not data:
                 return jsonify({"error": "Empty file"}), 400
 
+            # Kiểm tra kích thước file
+            if not validate_file_size(len(data)):
+                return jsonify({
+                    "error": "File too large", 
+                    "max_size_mb": MAX_CONTENT_LENGTH // (1024 * 1024),
+                    "received_size_mb": len(data) // (1024 * 1024)
+                }), 400
+
             # open with PIL to avoid "file signature not found" errors
             try:
                 img = Image.open(io.BytesIO(data))
+                # Lưu thông tin gốc trước khi verify
+                original_format = img.format
+                original_mode = img.mode
                 img.verify()  # verify file integrity (does not load image fully)
             except UnidentifiedImageError:
                 return jsonify({"error": "Uploaded file is not a valid image"}), 400
-            except Exception:
-                # some images require re-opening after verify
-                try:
-                    img = Image.open(io.BytesIO(data)).convert('RGB')
-                except Exception:
-                    return jsonify({"error": "Cannot open image file"}), 400
-            else:
-                # reopen to get usable Image object (verify() can make file unusable)
-                img = Image.open(io.BytesIO(data)).convert('RGB')
+            except Exception as e:
+                return jsonify({"error": f"Cannot process image: {str(e)}"}), 400
+            
+            # reopen to get usable Image object (verify() can make file unusable)
+            try:
+                img = Image.open(io.BytesIO(data))
                 result = predict_pil_image(img)
+                result["original_format"] = original_format
+                result["filename"] = secure_filename(f.filename)
                 return jsonify({"success": True, "source": "upload", "result": result}), 200
+            except Exception as e:
+                return jsonify({"error": f"Cannot process image after verification: {str(e)}"}), 400
 
         # 2) check JSON with url
         if request.is_json:
@@ -112,15 +206,46 @@ def predict():
             if url:
                 # fetch remote image
                 try:
-                    resp = requests.get(url, timeout=10)
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                    resp = requests.get(url, timeout=15, headers=headers, stream=True)
                     resp.raise_for_status()
+                    
+                    # Kiểm tra content-type
+                    content_type = resp.headers.get('content-type', '')
+                    if content_type and not any(mime in content_type.lower() for mime in SUPPORTED_IMAGE_MIMES):
+                        return jsonify({
+                            "error": "URL does not point to a supported image format",
+                            "content_type": content_type,
+                            "supported_mimes": list(SUPPORTED_IMAGE_MIMES)
+                        }), 400
+                    
                     data = resp.content
+                    
+                    # Kiểm tra kích thước
+                    if not validate_file_size(len(data)):
+                        return jsonify({
+                            "error": "Remote file too large", 
+                            "max_size_mb": MAX_CONTENT_LENGTH // (1024 * 1024),
+                            "received_size_mb": len(data) // (1024 * 1024)
+                        }), 400
+                    
                     # try open with PIL
                     try:
-                        img = Image.open(io.BytesIO(data)).convert('RGB')
+                        img = Image.open(io.BytesIO(data))
+                        original_format = img.format
+                        img.verify()
+                        # reopen after verify
+                        img = Image.open(io.BytesIO(data))
                     except UnidentifiedImageError:
                         return jsonify({"error": "Fetched resource is not a valid image"}), 400
+                    except Exception as e:
+                        return jsonify({"error": f"Cannot process remote image: {str(e)}"}), 400
+                    
                     result = predict_pil_image(img)
+                    result["original_format"] = original_format
+                    result["content_type"] = content_type
                     return jsonify({"success": True, "source": url, "result": result}), 200
                 except requests.RequestException as e:
                     return jsonify({"error": "Failed to fetch image from url", "detail": str(e)}), 400
@@ -139,6 +264,8 @@ def predict_video():
     Xử lý video, trả về kết quả kiểm duyệt.
     Lưu ý: Chức năng này yêu cầu `opencv-python`.
     """
+    logger.info("Received video prediction request")
+    
     if 'file' not in request.files:
         return jsonify({"error": "No video file provided"}), 400
 
@@ -147,13 +274,36 @@ def predict_video():
     if video_file.filename == '':
         return jsonify({"error": "No filename provided"}), 400
 
+    # Kiểm tra định dạng video
+    if not is_supported_video(video_file.filename, video_file.content_type):
+        return jsonify({
+            "error": "Unsupported video format", 
+            "supported_formats": list(SUPPORTED_VIDEO_EXTENSIONS),
+            "received_filename": video_file.filename,
+            "received_content_type": video_file.content_type
+        }), 400
+
+    # Lấy extension gốc để giữ định dạng
+    original_ext = os.path.splitext(video_file.filename.lower())[1] or '.mp4'
+    
     # Lưu video vào file tạm để xử lý
     # Sử dụng delete=False và tự xóa để tương thích với Windows
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=original_ext)
     try:
         video_file.save(tmp.name)
         tmp.close()  # Đóng file để process khác có thể mở
+        
+        # Kiểm tra kích thước file
+        file_size = os.path.getsize(tmp.name)
+        if not validate_file_size(file_size, MAX_CONTENT_LENGTH * 2):  # Video có thể lớn hơn
+            return jsonify({
+                "error": "Video file too large", 
+                "max_size_mb": (MAX_CONTENT_LENGTH * 2) // (1024 * 1024),
+                "received_size_mb": file_size // (1024 * 1024)
+            }), 400
 
+        logger.info(f"Processing video: {video_file.filename}, size: {file_size} bytes")
+        
         # Gọi hàm xử lý video của opennsfw2
         # Lưu ý: hàm này có thể tốn nhiều thời gian và CPU/RAM
         elapsed_seconds, nsfw_probabilities = n2.predict_video_frames(tmp.name)
@@ -165,12 +315,17 @@ def predict_video():
                 "result": {
                     "is_nsfw": False,
                     "max_nsfw_probability": 0.0,
+                    "total_frames": 0,
+                    "filename": secure_filename(video_file.filename),
+                    "file_size_mb": round(file_size / (1024 * 1024), 2),
                     "details": "Video is empty or could not be processed."
                 }
             }), 200
 
         # Xử lý kết quả
         max_prob = max(nsfw_probabilities)
+        min_prob = min(nsfw_probabilities)
+        avg_prob = sum(nsfw_probabilities) / len(nsfw_probabilities)
         is_nsfw = max_prob >= NSFW_THRESHOLD
 
         # Tìm các frame có khả năng là NSFW
@@ -178,14 +333,27 @@ def predict_video():
             round(elapsed_seconds[i], 2) for i, prob in enumerate(nsfw_probabilities)
             if prob >= NSFW_THRESHOLD
         ]
+        
+        # Thống kê thêm
+        high_risk_frames = sum(1 for p in nsfw_probabilities if p >= 0.8)
+        medium_risk_frames = sum(1 for p in nsfw_probabilities if 0.5 <= p < 0.8)
 
         result = {
             "is_nsfw": is_nsfw,
             "max_nsfw_probability": float(max_prob),
+            "min_nsfw_probability": float(min_prob),
+            "avg_nsfw_probability": float(avg_prob),
+            "total_frames": len(nsfw_probabilities),
             "nsfw_frames_count": len(nsfw_timestamps),
+            "high_risk_frames": high_risk_frames,
+            "medium_risk_frames": medium_risk_frames,
             "nsfw_timestamps_seconds": nsfw_timestamps,
+            "filename": secure_filename(video_file.filename),
+            "file_size_mb": round(file_size / (1024 * 1024), 2),
+            "video_duration_seconds": round(max(elapsed_seconds) if elapsed_seconds else 0, 2)
         }
 
+        logger.info(f"Video processing completed: {result['total_frames']} frames, {result['nsfw_frames_count']} NSFW frames")
         return jsonify({"success": True, "source": "upload", "result": result}), 200
 
     except Exception as e:
@@ -205,7 +373,37 @@ def home():
 
 @app.route('/api')
 def api_info():
-    return jsonify({"message": "opennsfw2 Flask server. POST /predict with multipart 'file' or JSON {url}"}), 200
+    return jsonify({
+        "message": "opennsfw2 Flask server. POST /predict with multipart 'file' or JSON {url}",
+        "endpoints": {
+            "/predict": "Image NSFW detection",
+            "/predict_video": "Video NSFW detection",
+            "/supported_formats": "Get supported file formats",
+            "/health": "Health check"
+        }
+    }), 200
+
+@app.route('/supported_formats')
+def supported_formats():
+    """Trả về danh sách các định dạng file được hỗ trợ"""
+    return jsonify({
+        "supported_image_extensions": sorted(list(SUPPORTED_IMAGE_EXTENSIONS)),
+        "supported_video_extensions": sorted(list(SUPPORTED_VIDEO_EXTENSIONS)),
+        "supported_image_mimes": sorted(list(SUPPORTED_IMAGE_MIMES)),
+        "supported_video_mimes": sorted(list(SUPPORTED_VIDEO_MIMES)),
+        "max_file_size_mb": MAX_CONTENT_LENGTH // (1024 * 1024),
+        "nsfw_threshold": NSFW_THRESHOLD
+    }), 200
+
+@app.route('/health')
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        "status": "healthy",
+        "service": "NSFW Detection API",
+        "version": "2.0",
+        "timestamp": str(time.time())
+    }), 200
 
 
 if __name__ == '__main__':
@@ -215,4 +413,4 @@ if __name__ == '__main__':
     logger.info(f"NSFW Threshold: {NSFW_THRESHOLD}")
     
     # chạy dev server, production nên dùng gunicorn/uvicorn
-    app.run(host='0.0.0.0', port=2002, debug=True)
+    app.run(host='0.0.0.0', port=7860, debug=True)

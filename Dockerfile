@@ -1,9 +1,6 @@
 # Sử dụng Python 3.9 slim base image
 FROM python:3.9-slim
 
-# Thiết lập thư mục làm việc
-WORKDIR /app
-
 # Cài đặt các dependencies hệ thống cần thiết cho OpenCV
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
@@ -14,11 +11,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1 \
     libgstreamer1.0-0 \
     libgstreamer-plugins-base1.0-0 \
-    libgtk-3-0 \
-    libavcodec58 \
-    libavformat58 \
-    libswscale5 \
     && rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -u 1000 user
+USER user
+ENV HOME=/home/user
+WORKDIR $HOME/app
 
 # Copy requirements và cài đặt dependencies Python
 COPY requirements.txt .
@@ -28,7 +26,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Expose port
-EXPOSE 2002
+EXPOSE 7860
 
 # Chạy ứng dụng bằng Flask
 CMD ["python", "main.py"]

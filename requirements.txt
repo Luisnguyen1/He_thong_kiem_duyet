@@ -1,7 +1,8 @@
 flask
-Pillow
+Pillow>=9.0.0
 tensorflow
 opencv-python-headless
 opennsfw2
 requests
 gunicorn
+Werkzeug>=2.0.0

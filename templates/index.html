@@ -23,6 +23,13 @@
     <div class="container">
         <h1>Kiểm duyệt nội dung NSFW</h1>
         <p>Sử dụng opennsfw2 và Flask để phân tích hình ảnh và video.</p>
+        
+        <div id="formats-info" style="background: #e7f3ff; padding: 1em; border-radius: 5px; margin-bottom: 2em;">
+            <h3>Định dạng được hỗ trợ</h3>
+            <p><strong>Hình ảnh:</strong> <span id="image-formats">Đang tải...</span></p>
+            <p><strong>Video:</strong> <span id="video-formats">Đang tải...</span></p>
+            <p><strong>Kích thước tối đa:</strong> <span id="max-size">Đang tải...</span></p>
+        </div>
 
         <hr>
 
@@ -54,11 +61,46 @@
     </div>
 
     <script>
+        // Load supported formats on page load
+        window.addEventListener('DOMContentLoaded', loadSupportedFormats);
+
+        async function loadSupportedFormats() {
+            try {
+                const response = await fetch('/supported_formats');
+                if (response.ok) {
+                    const data = await response.json();
+                    document.getElementById('image-formats').textContent = data.supported_image_extensions.join(', ');
+                    document.getElementById('video-formats').textContent = data.supported_video_extensions.join(', ');
+                    document.getElementById('max-size').textContent = data.max_file_size_mb + ' MB';
+                    
+                    // Update file input accept attributes
+                    const imageExtensions = data.supported_image_extensions.join(',');
+                    const videoExtensions = data.supported_video_extensions.join(',');
+                    document.getElementById('image-file').setAttribute('accept', imageExtensions);
+                    document.getElementById('video-file').setAttribute('accept', videoExtensions);
+                } else {
+                    document.getElementById('image-formats').textContent = 'Không thể tải';
+                    document.getElementById('video-formats').textContent = 'Không thể tải';
+                    document.getElementById('max-size').textContent = 'Không thể tải';
+                }
+            } catch (error) {
+                console.error('Error loading supported formats:', error);
+                document.getElementById('image-formats').textContent = 'Lỗi tải dữ liệu';
+                document.getElementById('video-formats').textContent = 'Lỗi tải dữ liệu';
+                document.getElementById('max-size').textContent = 'Lỗi tải dữ liệu';
+            }
+        }
+
         // --- Form phân tích ảnh (Tải file) ---
         document.getElementById('image-form').addEventListener('submit', async (e) => {
             e.preventDefault();
+            const fileInput = document.getElementById('image-file');
+            if (!fileInput.files[0]) {
+                alert('Vui lòng chọn một file ảnh');
+                return;
+            }
             const formData = new FormData();
-            formData.append('file', document.getElementById('image-file').files[0]);
+            formData.append('file', fileInput.files[0]);
             handleRequest('/predict', formData, 'image-loader', 'image-result');
         });
 
@@ -66,6 +108,10 @@
         document.getElementById('image-url-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const url = document.getElementById('image-url').value;
+            if (!url.trim()) {
+                alert('Vui lòng nhập URL ảnh');
+                return;
+            }
             const payload = JSON.stringify({ url: url });
             handleRequest('/predict', payload, 'image-loader', 'image-result', { 'Content-Type': 'application/json' });
         });
@@ -73,8 +119,13 @@
         // --- Form phân tích video ---
         document.getElementById('video-form').addEventListener('submit', async (e) => {
             e.preventDefault();
+            const fileInput = document.getElementById('video-file');
+            if (!fileInput.files[0]) {
+                alert('Vui lòng chọn một file video');
+                return;
+            }
             const formData = new FormData();
-            formData.append('file', document.getElementById('video-file').files[0]);
+            formData.append('file', fileInput.files[0]);
             handleRequest('/predict_video', formData, 'video-loader', 'video-result');
         });
 
@@ -97,6 +148,11 @@
 
                 if (response.ok) {
                     resultDiv.textContent = JSON.stringify(data, null, 2);
+                    // Thêm một số thông tin dễ đọc hơn cho người dùng
+                    if (data.result && data.result.nsfw_probability !== undefined) {
+                        const summary = `\n\n=== TÓM TẮT ===\nXác suất NSFW: ${(data.result.nsfw_probability * 100).toFixed(2)}%\nKết luận: ${data.result.is_nsfw ? 'NSFW (Không phù hợp)' : 'An toàn'}`;
+                        resultDiv.textContent += summary;
+                    }
                 } else {
                     resultDiv.className = 'result error';
                     resultDiv.textContent = `Lỗi ${response.status}: ${JSON.stringify(data, null, 2)}`;
