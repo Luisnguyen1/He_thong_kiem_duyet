@@ -257,70 +257,40 @@ def predict():
         return jsonify({"error": "Internal server error", "detail": str(e), "trace": tb}), 500
 
 
-@app.route('/predict_video', methods=['POST'])
-def predict_video():
+def process_video_file(video_path, filename="video"):
     """
-    Hỗ trợ upload video qua multipart/form-data với field 'file'.
-    Xử lý video, trả về kết quả kiểm duyệt.
-    Lưu ý: Chức năng này yêu cầu `opencv-python`.
+    Xử lý file video và trả về kết quả kiểm duyệt
     """
-    logger.info("Received video prediction request")
-    
-    if 'file' not in request.files:
-        return jsonify({"error": "No video file provided"}), 400
-
-    video_file = request.files['file']
-
-    if video_file.filename == '':
-        return jsonify({"error": "No filename provided"}), 400
-
-    # Kiểm tra định dạng video
-    if not is_supported_video(video_file.filename, video_file.content_type):
-        return jsonify({
-            "error": "Unsupported video format", 
-            "supported_formats": list(SUPPORTED_VIDEO_EXTENSIONS),
-            "received_filename": video_file.filename,
-            "received_content_type": video_file.content_type
-        }), 400
-
-    # Lấy extension gốc để giữ định dạng
-    original_ext = os.path.splitext(video_file.filename.lower())[1] or '.mp4'
-    
-    # Lưu video vào file tạm để xử lý
-    # Sử dụng delete=False và tự xóa để tương thích với Windows
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=original_ext)
     try:
-        video_file.save(tmp.name)
-        tmp.close()  # Đóng file để process khác có thể mở
-        
         # Kiểm tra kích thước file
-        file_size = os.path.getsize(tmp.name)
-        if not validate_file_size(file_size, MAX_CONTENT_LENGTH * 2):  # Video có thể lớn hơn
-            return jsonify({
+        file_size = os.path.getsize(video_path)
+        max_video_size = MAX_CONTENT_LENGTH * 3  # Video cho phép lớn hơn: 30MB
+        
+        if not validate_file_size(file_size, max_video_size):
+            return {
                 "error": "Video file too large", 
-                "max_size_mb": (MAX_CONTENT_LENGTH * 2) // (1024 * 1024),
+                "max_size_mb": max_video_size // (1024 * 1024),
                 "received_size_mb": file_size // (1024 * 1024)
-            }), 400
+            }, 400
 
-        logger.info(f"Processing video: {video_file.filename}, size: {file_size} bytes")
+        logger.info(f"Processing video: {filename}, size: {file_size} bytes")
         
         # Gọi hàm xử lý video của opennsfw2
         # Lưu ý: hàm này có thể tốn nhiều thời gian và CPU/RAM
-        elapsed_seconds, nsfw_probabilities = n2.predict_video_frames(tmp.name)
+        elapsed_seconds, nsfw_probabilities = n2.predict_video_frames(video_path)
 
         if not nsfw_probabilities:
-            return jsonify({
+            return {
                 "success": True,
-                "source": "upload",
                 "result": {
                     "is_nsfw": False,
                     "max_nsfw_probability": 0.0,
                     "total_frames": 0,
-                    "filename": secure_filename(video_file.filename),
+                    "filename": secure_filename(filename),
                     "file_size_mb": round(file_size / (1024 * 1024), 2),
                     "details": "Video is empty or could not be processed."
                 }
-            }), 200
+            }, 200
 
         # Xử lý kết quả
         max_prob = max(nsfw_probabilities)
@@ -328,11 +298,8 @@ def predict_video():
         avg_prob = sum(nsfw_probabilities) / len(nsfw_probabilities)
         is_nsfw = max_prob >= NSFW_THRESHOLD
 
-        # Tìm các frame có khả năng là NSFW
-        nsfw_timestamps = [
-            round(elapsed_seconds[i], 2) for i, prob in enumerate(nsfw_probabilities)
-            if prob >= NSFW_THRESHOLD
-        ]
+        # Đếm các frame có khả năng là NSFW
+        nsfw_frames_count = sum(1 for prob in nsfw_probabilities if prob >= NSFW_THRESHOLD)
         
         # Thống kê thêm
         high_risk_frames = sum(1 for p in nsfw_probabilities if p >= 0.8)
@@ -344,27 +311,174 @@ def predict_video():
             "min_nsfw_probability": float(min_prob),
             "avg_nsfw_probability": float(avg_prob),
             "total_frames": len(nsfw_probabilities),
-            "nsfw_frames_count": len(nsfw_timestamps),
+            "nsfw_frames_count": nsfw_frames_count,
             "high_risk_frames": high_risk_frames,
             "medium_risk_frames": medium_risk_frames,
-            "nsfw_timestamps_seconds": nsfw_timestamps,
-            "filename": secure_filename(video_file.filename),
+            "filename": secure_filename(filename),
             "file_size_mb": round(file_size / (1024 * 1024), 2),
             "video_duration_seconds": round(max(elapsed_seconds) if elapsed_seconds else 0, 2)
         }
 
         logger.info(f"Video processing completed: {result['total_frames']} frames, {result['nsfw_frames_count']} NSFW frames")
-        return jsonify({"success": True, "source": "upload", "result": result}), 200
+        return {"success": True, "result": result}, 200
+        
+    except Exception as e:
+        tb = traceback.format_exc()
+        logger.error(f"Video processing error: {e}")
+        return {"error": "Internal server error during video processing", "detail": str(e), "trace": tb}, 500
+
+@app.route('/predict_video', methods=['POST'])
+def predict_video():
+    """
+    Hỗ trợ:
+    - multipart/form-data với field 'file' (upload file video)
+    - JSON { "url": "https://..." } => server sẽ fetch và dùng video đó
+    Xử lý video, trả về kết quả kiểm duyệt.
+    Lưu ý: Chức năng này yêu cầu `opencv-python`.
+    """
+    logger.info("Received video prediction request")
+    
+    try:
+        # 1) check file in form-data
+        if 'file' in request.files:
+            video_file = request.files['file']
+            
+            if video_file.filename == '':
+                return jsonify({"error": "No filename provided"}), 400
+
+            # Kiểm tra định dạng video
+            if not is_supported_video(video_file.filename, video_file.content_type):
+                return jsonify({
+                    "error": "Unsupported video format", 
+                    "supported_formats": list(SUPPORTED_VIDEO_EXTENSIONS),
+                    "received_filename": video_file.filename,
+                    "received_content_type": video_file.content_type
+                }), 400
+
+            # Lấy extension gốc để giữ định dạng
+            original_ext = os.path.splitext(video_file.filename.lower())[1] or '.mp4'
+            
+            # Lưu video vào file tạm để xử lý
+            # Sử dụng delete=False và tự xóa để tương thích với Windows
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=original_ext)
+            try:
+                video_file.save(tmp.name)
+                tmp.close()  # Đóng file để process khác có thể mở
+                
+                response_data, status_code = process_video_file(tmp.name, video_file.filename)
+                response_data["source"] = "upload"
+                return jsonify(response_data), status_code
+                
+            finally:
+                # Dọn dẹp file tạm
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
+
+        # 2) check JSON with url
+        if request.is_json:
+            body = request.get_json()
+            url = body.get("url")
+            if url:
+                # fetch remote video
+                try:
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                    }
+                    
+                    # Kiểm tra URL trước khi tải
+                    logger.info(f"Fetching video from URL: {url}")
+                    resp = requests.head(url, timeout=10, headers=headers, allow_redirects=True)
+                    
+                    # Kiểm tra content-type
+                    content_type = resp.headers.get('content-type', '')
+                    if content_type and not any(mime in content_type.lower() for mime in SUPPORTED_VIDEO_MIMES):
+                        # Thử kiểm tra extension từ URL nếu content-type không rõ ràng
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(url)
+                        ext = os.path.splitext(parsed_url.path.lower())[1]
+                        if ext not in SUPPORTED_VIDEO_EXTENSIONS:
+                            return jsonify({
+                                "error": "URL does not point to a supported video format",
+                                "content_type": content_type,
+                                "url_extension": ext,
+                                "supported_mimes": list(SUPPORTED_VIDEO_MIMES),
+                                "supported_extensions": list(SUPPORTED_VIDEO_EXTENSIONS)
+                            }), 400
+                    
+                    # Kiểm tra content-length nếu có
+                    content_length = resp.headers.get('content-length')
+                    if content_length:
+                        file_size = int(content_length)
+                        max_size = MAX_CONTENT_LENGTH * 3  # 30MB cho video
+                        if file_size > max_size:
+                            return jsonify({
+                                "error": "Remote video file too large", 
+                                "max_size_mb": max_size // (1024 * 1024),
+                                "remote_size_mb": file_size // (1024 * 1024)
+                            }), 400
+                    
+                    # Tải video xuống
+                    logger.info(f"Downloading video from: {url}")
+                    resp = requests.get(url, timeout=60, headers=headers, stream=True)
+                    resp.raise_for_status()
+                    
+                    # Xác định extension từ URL hoặc content-type
+                    from urllib.parse import urlparse
+                    parsed_url = urlparse(url)
+                    url_ext = os.path.splitext(parsed_url.path.lower())[1]
+                    
+                    if url_ext in SUPPORTED_VIDEO_EXTENSIONS:
+                        video_ext = url_ext
+                    elif 'mp4' in content_type:
+                        video_ext = '.mp4'
+                    elif 'webm' in content_type:
+                        video_ext = '.webm'
+                    elif 'avi' in content_type:
+                        video_ext = '.avi'
+                    else:
+                        video_ext = '.mp4'  # default
+                    
+                    # Lưu vào file tạm
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=video_ext)
+                    try:
+                        total_size = 0
+                        max_size = MAX_CONTENT_LENGTH * 3  # 30MB
+                        
+                        for chunk in resp.iter_content(chunk_size=8192):
+                            if chunk:
+                                total_size += len(chunk)
+                                if total_size > max_size:
+                                    return jsonify({
+                                        "error": "Remote video file too large during download", 
+                                        "max_size_mb": max_size // (1024 * 1024)
+                                    }), 400
+                                tmp.write(chunk)
+                        
+                        tmp.close()
+                        
+                        # Xử lý video
+                        filename = os.path.basename(parsed_url.path) or "remote_video" + video_ext
+                        response_data, status_code = process_video_file(tmp.name, filename)
+                        response_data["source"] = url
+                        response_data["result"]["content_type"] = content_type
+                        return jsonify(response_data), status_code
+                        
+                    finally:
+                        try:
+                            os.unlink(tmp.name)
+                        except Exception:
+                            pass
+                            
+                except requests.RequestException as e:
+                    return jsonify({"error": "Failed to fetch video from url", "detail": str(e)}), 400
+
+        return jsonify({"error": "No video provided. Send multipart form-data 'file' or JSON with 'url'."}), 400
 
     except Exception as e:
         tb = traceback.format_exc()
-        return jsonify({"error": "Internal server error during video processing", "detail": str(e), "trace": tb}), 500
-    finally:
-        # Dọn dẹp file tạm
-        try:
-            os.unlink(tmp.name)
-        except Exception:
-            pass
+        return jsonify({"error": "Internal server error", "detail": str(e), "trace": tb}), 500
 
 
 @app.route('/')

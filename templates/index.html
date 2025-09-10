@@ -56,6 +56,11 @@
             <input type="file" name="file" id="video-file" accept="video/*" required>
             <button type="submit">Kiểm tra Video</button>
         </form>
+        <form id="video-url-form">
+            <h3>...hoặc cung cấp URL video</h3>
+            <input type="url" name="url" id="video-url" placeholder="https://example.com/video.mp4" required>
+            <button type="submit">Kiểm tra URL Video</button>
+        </form>
         <div id="video-loader" class="loader"></div>
         <div id="video-result" class="result" style="display:none;"></div>
     </div>
@@ -116,7 +121,7 @@
             handleRequest('/predict', payload, 'image-loader', 'image-result', { 'Content-Type': 'application/json' });
         });
 
-        // --- Form phân tích video ---
+        // --- Form phân tích video (Tải file) ---
         document.getElementById('video-form').addEventListener('submit', async (e) => {
             e.preventDefault();
             const fileInput = document.getElementById('video-file');
@@ -127,6 +132,18 @@
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
             handleRequest('/predict_video', formData, 'video-loader', 'video-result');
+        });
+
+        // --- Form phân tích video (URL) ---
+        document.getElementById('video-url-form').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const url = document.getElementById('video-url').value;
+            if (!url.trim()) {
+                alert('Vui lòng nhập URL video');
+                return;
+            }
+            const payload = JSON.stringify({ url: url });
+            handleRequest('/predict_video', payload, 'video-loader', 'video-result', { 'Content-Type': 'application/json' });
         });
 
         async function handleRequest(endpoint, body, loaderId, resultId, headers = {}) {
@@ -150,7 +167,12 @@
                     resultDiv.textContent = JSON.stringify(data, null, 2);
                     // Thêm một số thông tin dễ đọc hơn cho người dùng
                     if (data.result && data.result.nsfw_probability !== undefined) {
+                        // Summary cho ảnh
                         const summary = `\n\n=== TÓM TẮT ===\nXác suất NSFW: ${(data.result.nsfw_probability * 100).toFixed(2)}%\nKết luận: ${data.result.is_nsfw ? 'NSFW (Không phù hợp)' : 'An toàn'}`;
+                        resultDiv.textContent += summary;
+                    } else if (data.result && data.result.max_nsfw_probability !== undefined) {
+                        // Summary cho video
+                        const summary = `\n\n=== TÓM TẮT VIDEO ===\nXác suất NSFW cao nhất: ${(data.result.max_nsfw_probability * 100).toFixed(2)}%\nXác suất NSFW trung bình: ${(data.result.avg_nsfw_probability * 100).toFixed(2)}%\nTổng số frame: ${data.result.total_frames}\nFrame NSFW: ${data.result.nsfw_frames_count}\nFrame rủi ro cao: ${data.result.high_risk_frames || 0}\nFrame rủi ro trung bình: ${data.result.medium_risk_frames || 0}\nKết luận: ${data.result.is_nsfw ? 'NSFW (Không phù hợp)' : 'An toàn'}`;
                         resultDiv.textContent += summary;
                     }
                 } else {

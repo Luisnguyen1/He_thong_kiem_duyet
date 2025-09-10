@@ -91,6 +91,7 @@ docker run -p 7860:7860 nsfw-detector
 ### 2. `POST /predict_video` - Kiểm duyệt video
 **Input:**
 - **Multipart form-data**: `file` (video upload)
+- **JSON**: `{"url": "https://example.com/video.mp4"}` (URL video)
 
 **Output:**
 ```json
@@ -106,10 +107,10 @@ docker run -p 7860:7860 nsfw-detector
     "nsfw_frames_count": 5,
     "high_risk_frames": 1,
     "medium_risk_frames": 4,
-    "nsfw_timestamps_seconds": [12.5, 25.3, 45.1],
     "filename": "video.mp4",
     "file_size_mb": 15.6,
-    "video_duration_seconds": 60.0
+    "video_duration_seconds": 60.0,
+    "content_type": "video/mp4"
   }
 }
 ```
