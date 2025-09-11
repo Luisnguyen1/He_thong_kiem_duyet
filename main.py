@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify, render_template
+from flask_cors import CORS
 from PIL import Image, UnidentifiedImageError
 import io
 import os
@@ -11,6 +12,9 @@ import sys
 import mimetypes
 import time
 from werkzeug.utils import secure_filename
+import cv2
+import numpy as np
+from functools import lru_cache
 
 # Chọn path ghi được
 home = os.path.expanduser("~")  # sẽ là /home/user
@@ -57,10 +61,19 @@ def is_supported_video(filename, content_type=None):
     return False
 
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 
 # cấu hình
-MAX_CONTENT_LENGTH = 10 * 1024 * 1024  # 10MB giới hạn kích thước upload
+MAX_CONTENT_LENGTH = 1024 * 1024 * 1024  # 1024MB giới hạn kích thước upload
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
+
+# Add error handler for large files
+@app.errorhandler(413)
+def file_too_large(error):
+    return jsonify({
+        "error": "File too large",
+        "max_size_mb": MAX_CONTENT_LENGTH // (1024 * 1024)
+    }), 413
 
 def validate_file_size(file_size, max_size=MAX_CONTENT_LENGTH):
     """Kiểm tra kích thước file"""
@@ -91,10 +104,106 @@ SUPPORTED_VIDEO_MIMES = {
     'video/x-ms-wmv', 'video/x-ms-asf'
 }
 
+# Cấu hình tối ưu video
+VIDEO_OPTIMIZATION_CONFIG = {
+    "frame_skip": 8,  # Chỉ xử lý mỗi frame thứ 8
+    "max_frames": 50,  # Giới hạn tối đa 50 frames
+    "early_stop_threshold": 0.85,  # Dừng sớm nếu phát hiện NSFW cao
+    "resize_dimension": (224, 224),  # Resize nhỏ để tăng tốc
+    "min_confidence_stop": 3,  # Dừng sau 3 frames NSFW liên tiếp
+}
+
 # --- Optional: preload model (nếu opennsfw2 hỗ trợ preload, gọi theo docs) ---
 # Nếu opennsfw2 có hàm load_model bạn có thể gọi ở đây. Nếu không có, predict_image
 # thường sẽ tự lo. Mình giữ dòng comment để bạn bật khi cần:
 # n2.load_model(device='cpu')  # ví dụ
+
+@lru_cache(maxsize=128)
+def get_video_metadata(video_path):
+    """Cache metadata video để tránh đọc lại nhiều lần"""
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = frame_count / fps if fps > 0 else 0
+    cap.release()
+    return {"fps": fps, "frame_count": frame_count, "duration": duration}
+
+def extract_optimized_frames(video_path, config=VIDEO_OPTIMIZATION_CONFIG):
+    """
+    Trích xuất frames với các tối ưu:
+    - Skip frames để giảm số lượng
+    - Resize để tăng tốc xử lý
+    - Phân bố đều frames khắp video
+    """
+    cap = cv2.VideoCapture(video_path)
+    frames = []
+    frame_indices = []
+    
+    try:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_skip = config["frame_skip"]
+        max_frames = config["max_frames"]
+        
+        # Tối ưu: Lấy frame đều khắp video thay vì liên tiếp
+        if total_frames > max_frames * frame_skip:
+            # Phân bố đều frames khắp video
+            step = total_frames // max_frames
+            indices = range(0, total_frames, step)[:max_frames]
+        else:
+            # Skip frames thông thường
+            indices = range(0, min(total_frames, max_frames * frame_skip), frame_skip)
+        
+        for i, frame_idx in enumerate(indices):
+            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+            ret, frame = cap.read()
+            
+            if ret:
+                # Resize để tăng tốc
+                if config.get("resize_dimension"):
+                    frame = cv2.resize(frame, config["resize_dimension"])
+                
+                # Chuyển BGR sang RGB cho opennsfw2
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frames.append(frame_rgb)
+                frame_indices.append(frame_idx)
+                
+                # Tối ưu: Giới hạn số frame
+                if len(frames) >= max_frames:
+                    break
+    
+    finally:
+        cap.release()
+    
+    return frames, frame_indices
+
+def predict_frame_batch(frames, config=VIDEO_OPTIMIZATION_CONFIG):
+    """Xử lý frames với early stopping"""
+    results = []
+    consecutive_nsfw = 0
+    early_stop_threshold = config["early_stop_threshold"]
+    min_confidence_stop = config["min_confidence_stop"]
+    
+    for i, frame in enumerate(frames):
+        try:
+            # Chuyển numpy array sang PIL Image
+            pil_img = Image.fromarray(frame)
+            prob = float(n2.predict_image(pil_img))
+            results.append(prob)
+            
+            # Early stopping logic
+            if prob >= early_stop_threshold:
+                consecutive_nsfw += 1
+                if consecutive_nsfw >= min_confidence_stop:
+                    logger.info(f"Early stop after {i+1} frames - high NSFW detected")
+                    break
+            else:
+                consecutive_nsfw = 0
+                
+        except Exception as e:
+            logger.warning(f"Frame {i} prediction failed: {e}")
+            results.append(0.0)
+    
+    return results
 
 def predict_pil_image(pil_img):
     """
@@ -259,9 +368,11 @@ def predict():
 
 def process_video_file(video_path, filename="video"):
     """
-    Xử lý file video và trả về kết quả kiểm duyệt
+    Xử lý file video tối ưu với frame sampling và early stopping
     """
     try:
+        start_time = time.time()
+        
         # Kiểm tra kích thước file
         file_size = os.path.getsize(video_path)
         max_video_size = MAX_CONTENT_LENGTH * 3  # Video cho phép lớn hơn: 30MB
@@ -273,11 +384,32 @@ def process_video_file(video_path, filename="video"):
                 "received_size_mb": file_size // (1024 * 1024)
             }, 400
 
-        logger.info(f"Processing video: {filename}, size: {file_size} bytes")
+        logger.info(f"Processing video (optimized): {filename}, size: {file_size} bytes")
         
-        # Gọi hàm xử lý video của opennsfw2
-        # Lưu ý: hàm này có thể tốn nhiều thời gian và CPU/RAM
-        elapsed_seconds, nsfw_probabilities = n2.predict_video_frames(video_path)
+        # Sử dụng tối ưu frame extraction thay vì predict_video_frames gốc
+        try:
+            frames, frame_indices = extract_optimized_frames(video_path)
+            
+            if not frames:
+                return {
+                    "success": True,
+                    "result": {
+                        "is_nsfw": False,
+                        "max_nsfw_probability": 0.0,
+                        "total_frames": 0,
+                        "filename": secure_filename(filename),
+                        "file_size_mb": round(file_size / (1024 * 1024), 2),
+                        "processing_time": round(time.time() - start_time, 2)
+                    }
+                }, 200
+            
+            # Xử lý frames với early stopping
+            nsfw_probabilities = predict_frame_batch(frames)
+            
+        except Exception as e:
+            # Fallback về phương pháp cũ nếu tối ưu thất bại
+            logger.warning(f"Optimized processing failed, using fallback: {e}")
+            elapsed_seconds, nsfw_probabilities = n2.predict_video_frames(video_path)
 
         if not nsfw_probabilities:
             return {
@@ -288,44 +420,40 @@ def process_video_file(video_path, filename="video"):
                     "total_frames": 0,
                     "filename": secure_filename(filename),
                     "file_size_mb": round(file_size / (1024 * 1024), 2),
-                    "details": "Video is empty or could not be processed."
+                    "processing_time": round(time.time() - start_time, 2)
                 }
             }, 200
 
-        # Xử lý kết quả
+        # Xử lý kết quả - tối ưu response
         max_prob = max(nsfw_probabilities)
-        min_prob = min(nsfw_probabilities)
-        avg_prob = sum(nsfw_probabilities) / len(nsfw_probabilities)
         is_nsfw = max_prob >= NSFW_THRESHOLD
-
-        # Đếm các frame có khả năng là NSFW
-        nsfw_frames_count = sum(1 for prob in nsfw_probabilities if prob >= NSFW_THRESHOLD)
         
-        # Thống kê thêm
-        high_risk_frames = sum(1 for p in nsfw_probabilities if p >= 0.8)
-        medium_risk_frames = sum(1 for p in nsfw_probabilities if 0.5 <= p < 0.8)
+        # Chỉ tính các thống kê cần thiết
+        if is_nsfw:
+            nsfw_frames_count = sum(1 for prob in nsfw_probabilities if prob >= NSFW_THRESHOLD)
+            avg_prob = sum(nsfw_probabilities) / len(nsfw_probabilities)
+        else:
+            nsfw_frames_count = 0
+            avg_prob = sum(nsfw_probabilities) / len(nsfw_probabilities)
 
+        # Response tối ưu - chỉ trả về thông tin cần thiết
         result = {
             "is_nsfw": is_nsfw,
-            "max_nsfw_probability": float(max_prob),
-            "min_nsfw_probability": float(min_prob),
-            "avg_nsfw_probability": float(avg_prob),
+            "max_nsfw_probability": round(float(max_prob), 3),
+            "avg_nsfw_probability": round(float(avg_prob), 3),
             "total_frames": len(nsfw_probabilities),
             "nsfw_frames_count": nsfw_frames_count,
-            "high_risk_frames": high_risk_frames,
-            "medium_risk_frames": medium_risk_frames,
             "filename": secure_filename(filename),
             "file_size_mb": round(file_size / (1024 * 1024), 2),
-            "video_duration_seconds": round(max(elapsed_seconds) if elapsed_seconds else 0, 2)
+            "processing_time": round(time.time() - start_time, 2)
         }
 
-        logger.info(f"Video processing completed: {result['total_frames']} frames, {result['nsfw_frames_count']} NSFW frames")
+        logger.info(f"Video processing completed in {result['processing_time']}s: {result['total_frames']} frames, {result['nsfw_frames_count']} NSFW")
         return {"success": True, "result": result}, 200
         
     except Exception as e:
-        tb = traceback.format_exc()
         logger.error(f"Video processing error: {e}")
-        return {"error": "Internal server error during video processing", "detail": str(e), "trace": tb}, 500
+        return {"error": "Video processing failed", "detail": str(e)}, 500
 
 @app.route('/predict_video', methods=['POST'])
 def predict_video():
@@ -481,20 +609,158 @@ def predict_video():
         return jsonify({"error": "Internal server error", "detail": str(e), "trace": tb}), 500
 
 
+@app.route('/predict_video_fast', methods=['POST'])
+def predict_video_fast():
+    """
+    Endpoint tối ưu cho xử lý video nhanh
+    - Chỉ xử lý mỗi frame thứ 8
+    - Early stopping
+    - Response tối giản
+    """
+    logger.info("Received fast video prediction request")
+    
+    # Tương tự predict_video nhưng dùng các tối ưu
+    global VIDEO_OPTIMIZATION_CONFIG
+    
+    # Cấu hình nhanh hơn cho endpoint fast
+    VIDEO_OPTIMIZATION_CONFIG["frame_skip"] = 10
+    VIDEO_OPTIMIZATION_CONFIG["early_stop_threshold"] = 0.8
+    
+    try:
+        if 'file' in request.files:
+            video_file = request.files['file']
+            
+            if video_file.filename == '':
+                return jsonify({"error": "No filename provided"}), 400
+
+            if not is_supported_video(video_file.filename, video_file.content_type):
+                return jsonify({
+                    "error": "Unsupported video format", 
+                    "supported_formats": list(SUPPORTED_VIDEO_EXTENSIONS)
+                }), 400
+
+            original_ext = os.path.splitext(video_file.filename.lower())[1] or '.mp4'
+            
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=original_ext)
+            try:
+                video_file.save(tmp.name)
+                tmp.close()
+                
+                response_data, status_code = process_video_file(tmp.name, video_file.filename)
+                response_data["source"] = "upload"
+                response_data["mode"] = "fast"
+                return jsonify(response_data), status_code
+                
+            finally:
+                try:
+                    os.unlink(tmp.name)
+                except Exception:
+                    pass
+
+        elif request.is_json:
+            body = request.get_json()
+            url = body.get("url")
+            if url:
+                # Xử lý URL tương tự nhưng nhanh hơn
+                try:
+                    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                    
+                    resp = requests.head(url, timeout=10, headers=headers, allow_redirects=True)
+                    content_type = resp.headers.get('content-type', '')
+                    
+                    if content_type and not any(mime in content_type.lower() for mime in SUPPORTED_VIDEO_MIMES):
+                        from urllib.parse import urlparse
+                        parsed_url = urlparse(url)
+                        ext = os.path.splitext(parsed_url.path.lower())[1]
+                        if ext not in SUPPORTED_VIDEO_EXTENSIONS:
+                            return jsonify({"error": "Unsupported video format"}), 400
+                    
+                    resp = requests.get(url, timeout=60, headers=headers, stream=True)
+                    resp.raise_for_status()
+                    
+                    video_ext = '.mp4'  # default
+                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=video_ext)
+                    try:
+                        for chunk in resp.iter_content(chunk_size=8192):
+                            if chunk:
+                                tmp.write(chunk)
+                        tmp.close()
+                        
+                        filename = "remote_video" + video_ext
+                        response_data, status_code = process_video_file(tmp.name, filename)
+                        response_data["source"] = url
+                        response_data["mode"] = "fast"
+                        return jsonify(response_data), status_code
+                        
+                    finally:
+                        try:
+                            os.unlink(tmp.name)
+                        except Exception:
+                            pass
+                            
+                except requests.RequestException as e:
+                    return jsonify({"error": "Failed to fetch video", "detail": str(e)}), 400
+
+        return jsonify({"error": "No video provided"}), 400
+
+    except Exception as e:
+        return jsonify({"error": "Internal server error", "detail": str(e)}), 500
+
+
+@app.route('/video_config', methods=['GET', 'POST'])
+def video_config():
+    """Endpoint để xem và cập nhật cấu hình tối ưu video"""
+    global VIDEO_OPTIMIZATION_CONFIG
+    
+    if request.method == 'GET':
+        return jsonify({
+            "current_config": VIDEO_OPTIMIZATION_CONFIG,
+            "description": {
+                "frame_skip": "Bỏ qua mỗi N frame (càng cao càng nhanh nhưng ít chính xác)",
+                "max_frames": "Số frame tối đa xử lý",
+                "early_stop_threshold": "Ngưỡng dừng sớm khi phát hiện NSFW"
+            }
+        }), 200
+    
+    elif request.method == 'POST':
+        try:
+            new_config = request.get_json()
+            if new_config:
+                for key, value in new_config.items():
+                    if key in VIDEO_OPTIMIZATION_CONFIG:
+                        VIDEO_OPTIMIZATION_CONFIG[key] = value
+                
+                return jsonify({"success": True, "updated_config": VIDEO_OPTIMIZATION_CONFIG}), 200
+            else:
+                return jsonify({"error": "No configuration provided"}), 400
+        except Exception as e:
+            return jsonify({"error": f"Failed to update config: {str(e)}"}), 400
+
+
 @app.route('/')
 def home():
     return render_template('index.html')
 
+
 @app.route('/api')
 def api_info():
     return jsonify({
-        "message": "opennsfw2 Flask server. POST /predict with multipart 'file' or JSON {url}",
+        "message": "opennsfw2 Flask server with optimized video processing",
         "endpoints": {
             "/predict": "Image NSFW detection",
-            "/predict_video": "Video NSFW detection",
+            "/predict_video": "Standard video NSFW detection",
+            "/predict_video_fast": "Optimized fast video NSFW detection (recommended)",
+            "/video_config": "Get/Set video optimization parameters",
             "/supported_formats": "Get supported file formats",
             "/health": "Health check"
-        }
+        },
+        "optimization_features": [
+            "Frame sampling (skip frames)",
+            "Early stopping on high NSFW detection", 
+            "Frame resizing for speed",
+            "Optimized response format",
+            "Configurable parameters"
+        ]
     }), 200
 
 @app.route('/supported_formats')

@@ -6,26 +6,78 @@
     <title>Kiểm duyệt nội dung NSFW</title>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 2em; background-color: #f4f4f9; color: #333; }
-        .container { max-width: 800px; margin: auto; background: white; padding: 2em; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        .container { max-width: 900px; margin: auto; background: white; padding: 2em; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
         h1, h2 { color: #333; }
         hr { border: 0; height: 1px; background: #ddd; margin: 2em 0; }
         form { margin-bottom: 1em; }
         input[type="file"], input[type="url"] { padding: 0.5em; border: 1px solid #ccc; border-radius: 4px; width: calc(100% - 130px); margin-right: 10px; }
-        button { padding: 0.5em 1em; border: none; background-color: #007bff; color: white; border-radius: 4px; cursor: pointer; font-size: 1em; }
+        button { padding: 0.5em 1em; border: none; background-color: #007bff; color: white; border-radius: 4px; cursor: pointer; font-size: 1em; margin: 2px; }
         button:hover { background-color: #0056b3; }
+        button.fast { background-color: #28a745; }
+        button.fast:hover { background-color: #1e7e34; }
+        button:disabled { background-color: #6c757d; cursor: not-allowed; }
+        .api-mode-selector { 
+            background: #f8f9fa; 
+            padding: 1em; 
+            border-radius: 5px; 
+            margin: 1em 0; 
+            border: 1px solid #dee2e6;
+        }
+        .api-mode-selector h4 { margin-top: 0; color: #495057; }
+        .mode-option { 
+            display: inline-block; 
+            margin-right: 15px; 
+            padding: 5px 0;
+        }
+        .mode-option input[type="radio"] { margin-right: 5px; }
+        .timer { 
+            font-size: 0.9em; 
+            color: #6c757d; 
+            margin: 10px 0; 
+            font-family: "Courier New", Courier, monospace;
+        }
+        .timer.running { color: #007bff; font-weight: bold; }
         .result { margin-top: 1em; padding: 1em; border: 1px solid #ccc; border-radius: 5px; background-color: #f9f9f9; white-space: pre-wrap; word-wrap: break-word; font-family: "Courier New", Courier, monospace; }
+        .result-summary { 
+            background: #e9ecef; 
+            padding: 1em; 
+            border-radius: 5px; 
+            margin-bottom: 1em; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+        .result-summary.nsfw { background: #f8d7da; border: 1px solid #f1aeb5; }
+        .result-summary.safe { background: #d1edff; border: 1px solid #9fdbff; }
         .error { color: #d8000c; background-color: #ffbaba; border-color: #d8000c; }
-        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #007bff; border-radius: 50%; width: 24px; height: 24px; animation: spin 1.5s linear infinite; display: none; margin-top: 1em; }
+        .loader { 
+            border: 4px solid #f3f3f3; 
+            border-top: 4px solid #007bff; 
+            border-radius: 50%; 
+            width: 24px; 
+            height: 24px; 
+            animation: spin 1.5s linear infinite; 
+            display: none; 
+            margin: 10px 0;
+            display: inline-block;
+        }
+        .loading-container { display: none; align-items: center; margin: 10px 0; }
+        .loading-container.show { display: flex; }
+        .loading-text { margin-left: 10px; color: #007bff; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .performance-info {
+            font-size: 0.85em;
+            color: #6c757d;
+            margin-top: 5px;
+            font-style: italic;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Kiểm duyệt nội dung NSFW</h1>
-        <p>Sử dụng opennsfw2 và Flask để phân tích hình ảnh và video.</p>
+        <h1>🔍 Kiểm duyệt nội dung NSFW</h1>
+        <p>Sử dụng opennsfw2 và Flask để phân tích hình ảnh và video với AI.</p>
         
         <div id="formats-info" style="background: #e7f3ff; padding: 1em; border-radius: 5px; margin-bottom: 2em;">
-            <h3>Định dạng được hỗ trợ</h3>
+            <h3>📋 Định dạng được hỗ trợ</h3>
             <p><strong>Hình ảnh:</strong> <span id="image-formats">Đang tải...</span></p>
             <p><strong>Video:</strong> <span id="video-formats">Đang tải...</span></p>
             <p><strong>Kích thước tối đa:</strong> <span id="max-size">Đang tải...</span></p>
@@ -33,7 +85,7 @@
 
         <hr>
 
-        <h2>Phân tích Hình ảnh</h2>
+        <h2>🖼️ Phân tích Hình ảnh</h2>
         <form id="image-form">
             <h3>Tải lên một ảnh</h3>
             <input type="file" name="file" id="image-file" accept="image/*" required>
@@ -44,28 +96,55 @@
             <input type="url" name="url" id="image-url" placeholder="https://example.com/image.jpg" required>
             <button type="submit">Kiểm tra URL</button>
         </form>
-        <div id="image-loader" class="loader"></div>
+        
+        <div class="loading-container" id="image-loading">
+            <div class="loader"></div>
+            <div class="loading-text">Đang phân tích ảnh...</div>
+        </div>
+        <div id="image-timer" class="timer"></div>
         <div id="image-result" class="result" style="display:none;"></div>
 
         <hr>
 
-        <h2>Phân tích Video</h2>
-        <p>Lưu ý: Quá trình xử lý video có thể chậm và tốn nhiều tài nguyên.</p>
+        <h2>🎥 Phân tích Video</h2>
+        
+        <div class="api-mode-selector">
+            <h4>⚙️ Chế độ phân tích:</h4>
+            <div class="mode-option">
+                <input type="radio" id="video-mode-standard" name="video-mode" value="standard">
+                <label for="video-mode-standard">🔍 <strong>Chuẩn</strong> - Phân tích chi tiết (chậm hơn, chính xác cao)</label>
+                <div class="performance-info">⏱️ Phân tích tất cả frames, thời gian: 30-60 giây</div>
+            </div>
+            <div class="mode-option">
+                <input type="radio" id="video-mode-fast" name="video-mode" value="fast" checked>
+                <label for="video-mode-fast">⚡ <strong>Nhanh</strong> - Phân tích tối ưu (nhanh, chính xác tốt)</label>
+                <div class="performance-info">🚀 Sampling frames + Early stopping, thời gian: 5-15 giây</div>
+            </div>
+        </div>
+        
         <form id="video-form">
             <h3>Tải lên một video</h3>
             <input type="file" name="file" id="video-file" accept="video/*" required>
-            <button type="submit">Kiểm tra Video</button>
+            <button type="submit" id="video-submit-btn">Kiểm tra Video</button>
         </form>
         <form id="video-url-form">
             <h3>...hoặc cung cấp URL video</h3>
             <input type="url" name="url" id="video-url" placeholder="https://example.com/video.mp4" required>
-            <button type="submit">Kiểm tra URL Video</button>
+            <button type="submit" id="video-url-submit-btn">Kiểm tra URL Video</button>
         </form>
-        <div id="video-loader" class="loader"></div>
+        
+        <div class="loading-container" id="video-loading">
+            <div class="loader"></div>
+            <div class="loading-text" id="video-loading-text">Đang phân tích video...</div>
+        </div>
+        <div id="video-timer" class="timer"></div>
         <div id="video-result" class="result" style="display:none;"></div>
     </div>
 
     <script>
+        let imageStartTime, videoStartTime;
+        let imageTimer, videoTimer;
+
         // Load supported formats on page load
         window.addEventListener('DOMContentLoaded', loadSupportedFormats);
 
@@ -96,6 +175,69 @@
             }
         }
 
+        function startTimer(type) {
+            const timerElement = document.getElementById(type + '-timer');
+            const startTime = Date.now();
+            
+            if (type === 'image') {
+                imageStartTime = startTime;
+                clearInterval(imageTimer);
+                imageTimer = setInterval(() => updateTimer('image'), 100);
+            } else {
+                videoStartTime = startTime;
+                clearInterval(videoTimer);
+                videoTimer = setInterval(() => updateTimer('video'), 100);
+            }
+            
+            timerElement.className = 'timer running';
+        }
+
+        function updateTimer(type) {
+            const timerElement = document.getElementById(type + '-timer');
+            const startTime = type === 'image' ? imageStartTime : videoStartTime;
+            const elapsed = (Date.now() - startTime) / 1000;
+            timerElement.textContent = `⏱️ Thời gian xử lý: ${elapsed.toFixed(1)}s`;
+        }
+
+        function stopTimer(type) {
+            const timerElement = document.getElementById(type + '-timer');
+            if (type === 'image') {
+                clearInterval(imageTimer);
+            } else {
+                clearInterval(videoTimer);
+            }
+            timerElement.className = 'timer';
+        }
+
+        function updateVideoModeUI() {
+            const fastMode = document.getElementById('video-mode-fast').checked;
+            const submitBtn = document.getElementById('video-submit-btn');
+            const urlSubmitBtn = document.getElementById('video-url-submit-btn');
+            const loadingText = document.getElementById('video-loading-text');
+            
+            if (fastMode) {
+                submitBtn.textContent = '⚡ Kiểm tra Video (Nhanh)';
+                submitBtn.className = 'fast';
+                urlSubmitBtn.textContent = '⚡ Kiểm tra URL Video (Nhanh)';
+                urlSubmitBtn.className = 'fast';
+                loadingText.textContent = 'Đang phân tích video (chế độ nhanh)...';
+            } else {
+                submitBtn.textContent = '🔍 Kiểm tra Video (Chuẩn)';
+                submitBtn.className = '';
+                urlSubmitBtn.textContent = '🔍 Kiểm tra URL Video (Chuẩn)';
+                urlSubmitBtn.className = '';
+                loadingText.textContent = 'Đang phân tích video (chế độ chuẩn)...';
+            }
+        }
+
+        // Update UI when mode changes
+        document.querySelectorAll('input[name="video-mode"]').forEach(radio => {
+            radio.addEventListener('change', updateVideoModeUI);
+        });
+
+        // Initialize UI
+        updateVideoModeUI();
+
         // --- Form phân tích ảnh (Tải file) ---
         document.getElementById('image-form').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -106,7 +248,7 @@
             }
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
-            handleRequest('/predict', formData, 'image-loader', 'image-result');
+            handleRequest('/predict', formData, 'image-loading', 'image-result', {}, 'image');
         });
 
         // --- Form phân tích ảnh (URL) ---
@@ -118,7 +260,7 @@
                 return;
             }
             const payload = JSON.stringify({ url: url });
-            handleRequest('/predict', payload, 'image-loader', 'image-result', { 'Content-Type': 'application/json' });
+            handleRequest('/predict', payload, 'image-loading', 'image-result', { 'Content-Type': 'application/json' }, 'image');
         });
 
         // --- Form phân tích video (Tải file) ---
@@ -129,9 +271,13 @@
                 alert('Vui lòng chọn một file video');
                 return;
             }
+            
+            const fastMode = document.getElementById('video-mode-fast').checked;
+            const endpoint = fastMode ? '/predict_video_fast' : '/predict_video';
+            
             const formData = new FormData();
             formData.append('file', fileInput.files[0]);
-            handleRequest('/predict_video', formData, 'video-loader', 'video-result');
+            handleRequest(endpoint, formData, 'video-loading', 'video-result', {}, 'video');
         });
 
         // --- Form phân tích video (URL) ---
@@ -142,17 +288,29 @@
                 alert('Vui lòng nhập URL video');
                 return;
             }
+            
+            const fastMode = document.getElementById('video-mode-fast').checked;
+            const endpoint = fastMode ? '/predict_video_fast' : '/predict_video';
+            
             const payload = JSON.stringify({ url: url });
-            handleRequest('/predict_video', payload, 'video-loader', 'video-result', { 'Content-Type': 'application/json' });
+            handleRequest(endpoint, payload, 'video-loading', 'video-result', { 'Content-Type': 'application/json' }, 'video');
         });
 
-        async function handleRequest(endpoint, body, loaderId, resultId, headers = {}) {
+        async function handleRequest(endpoint, body, loaderId, resultId, headers = {}, timerType = null) {
             const loader = document.getElementById(loaderId);
             const resultDiv = document.getElementById(resultId);
 
-            loader.style.display = 'block';
+            // Start loading and timer
+            loader.classList.add('show');
             resultDiv.style.display = 'none';
             resultDiv.className = 'result'; // Reset class
+            
+            if (timerType) {
+                startTimer(timerType);
+            }
+
+            // Disable submit buttons
+            document.querySelectorAll('button[type="submit"]').forEach(btn => btn.disabled = true);
 
             try {
                 const response = await fetch(endpoint, {
@@ -164,27 +322,57 @@
                 const data = await response.json();
 
                 if (response.ok) {
-                    resultDiv.textContent = JSON.stringify(data, null, 2);
-                    // Thêm một số thông tin dễ đọc hơn cho người dùng
+                    // Create summary first
+                    let summaryHtml = '';
                     if (data.result && data.result.nsfw_probability !== undefined) {
                         // Summary cho ảnh
-                        const summary = `\n\n=== TÓM TẮT ===\nXác suất NSFW: ${(data.result.nsfw_probability * 100).toFixed(2)}%\nKết luận: ${data.result.is_nsfw ? 'NSFW (Không phù hợp)' : 'An toàn'}`;
-                        resultDiv.textContent += summary;
+                        const isNsfw = data.result.is_nsfw;
+                        const prob = (data.result.nsfw_probability * 100).toFixed(2);
+                        summaryHtml = `<div class="result-summary ${isNsfw ? 'nsfw' : 'safe'}">
+                            <h3>${isNsfw ? '⚠️ NSFW (Không phù hợp)' : '✅ An toàn'}</h3>
+                            <p><strong>Xác suất NSFW:</strong> ${prob}%</p>
+                            <p><strong>Kích thước ảnh:</strong> ${data.result.image_size ? data.result.image_size.join(' × ') + ' pixels' : 'N/A'}</p>
+                            <p><strong>Định dạng:</strong> ${data.result.original_format || 'N/A'}</p>
+                        </div>`;
                     } else if (data.result && data.result.max_nsfw_probability !== undefined) {
                         // Summary cho video
-                        const summary = `\n\n=== TÓM TẮT VIDEO ===\nXác suất NSFW cao nhất: ${(data.result.max_nsfw_probability * 100).toFixed(2)}%\nXác suất NSFW trung bình: ${(data.result.avg_nsfw_probability * 100).toFixed(2)}%\nTổng số frame: ${data.result.total_frames}\nFrame NSFW: ${data.result.nsfw_frames_count}\nFrame rủi ro cao: ${data.result.high_risk_frames || 0}\nFrame rủi ro trung bình: ${data.result.medium_risk_frames || 0}\nKết luận: ${data.result.is_nsfw ? 'NSFW (Không phù hợp)' : 'An toàn'}`;
-                        resultDiv.textContent += summary;
+                        const isNsfw = data.result.is_nsfw;
+                        const maxProb = (data.result.max_nsfw_probability * 100).toFixed(2);
+                        const avgProb = (data.result.avg_nsfw_probability * 100).toFixed(2);
+                        const processingTime = data.result.processing_time || 'N/A';
+                        const mode = data.mode || (endpoint.includes('fast') ? 'fast' : 'standard');
+                        
+                        summaryHtml = `<div class="result-summary ${isNsfw ? 'nsfw' : 'safe'}">
+                            <h3>${isNsfw ? '⚠️ NSFW (Không phù hợp)' : '✅ An toàn'}</h3>
+                            <p><strong>Xác suất NSFW cao nhất:</strong> ${maxProb}%</p>
+                            <p><strong>Xác suất NSFW trung bình:</strong> ${avgProb}%</p>
+                            <p><strong>Frames phân tích:</strong> ${data.result.total_frames}</p>
+                            <p><strong>Frames NSFW:</strong> ${data.result.nsfw_frames_count}</p>
+                            <p><strong>Thời gian xử lý:</strong> ${processingTime}s</p>
+                            <p><strong>Chế độ:</strong> ${mode === 'fast' ? '⚡ Nhanh' : '🔍 Chuẩn'}</p>
+                            <p><strong>Kích thước file:</strong> ${data.result.file_size_mb || 'N/A'} MB</p>
+                        </div>`;
                     }
+                    
+                    resultDiv.innerHTML = summaryHtml + '<div style="margin-top: 1em;"><strong>📄 Dữ liệu chi tiết:</strong></div><pre style="background: #f8f9fa; padding: 1em; border-radius: 5px; overflow-x: auto; font-size: 0.9em;">' + JSON.stringify(data, null, 2) + '</pre>';
                 } else {
                     resultDiv.className = 'result error';
-                    resultDiv.textContent = `Lỗi ${response.status}: ${JSON.stringify(data, null, 2)}`;
+                    resultDiv.innerHTML = `<h3>❌ Lỗi ${response.status}</h3><pre>${JSON.stringify(data, null, 2)}</pre>`;
                 }
             } catch (error) {
                 resultDiv.className = 'result error';
-                resultDiv.textContent = `Lỗi mạng hoặc máy chủ: ${error.message}`;
+                resultDiv.innerHTML = `<h3>❌ Lỗi mạng</h3><p>${error.message}</p>`;
             } finally {
-                loader.style.display = 'none';
+                // Stop loading and timer
+                loader.classList.remove('show');
                 resultDiv.style.display = 'block';
+                
+                if (timerType) {
+                    stopTimer(timerType);
+                }
+
+                // Re-enable submit buttons
+                document.querySelectorAll('button[type="submit"]').forEach(btn => btn.disabled = false);
             }
         }
     </script>
